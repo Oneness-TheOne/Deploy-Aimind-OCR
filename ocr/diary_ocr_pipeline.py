@@ -79,8 +79,7 @@ def load_model():
         model_id,
         quantization_config=bnb_config,
         device_map="auto",
-        attn_implementation="sdpa",
-        low_cpu_mem_usage=True,
+        torch_dtype=torch.float16,
     )
     proc = AutoProcessor.from_pretrained(model_id)
     torch.backends.cudnn.benchmark = True

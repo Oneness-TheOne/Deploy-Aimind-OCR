@@ -1,3 +1,4 @@
+import asyncio
 import io
 import os
 import json
@@ -10,6 +11,7 @@ from dotenv import load_dotenv
 from PIL import Image
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -159,6 +161,77 @@ async def diary_ocr(file: UploadFile = File(...)):
         print(f"[diary-ocr] 응답 반환 직전 오류 (이미지 제외 후 재시도): {e}")
         response_item["image_data_url"] = None
         return [{**response_item, "교정된_내용": response_item.get("내용", "") or ""}]
+
+
+MAX_IMAGE_BYTES_FOR_RESPONSE = 1_400_000
+
+
+def _build_diary_ocr_response_item(raw_result: dict) -> dict:
+    """run() 결과에 image_data_url 등을 붙여 클라이언트 응답용 dict 생성."""
+    def _str(v):
+        return v if isinstance(v, str) else (v or "")
+    response_item = {k: _str(v) for k, v in raw_result.items()}
+    try:
+        cropped_path = (response_item.get("그림_저장경로") or "").strip()
+        if cropped_path:
+            p = Path(cropped_path)
+            if p.exists() and p.is_file():
+                url = _encode_image_base64_resized(p, max_bytes=MAX_IMAGE_BYTES_FOR_RESPONSE)
+                response_item["image_data_url"] = url
+            else:
+                response_item["image_data_url"] = None
+        else:
+            response_item["image_data_url"] = None
+    except Exception:
+        response_item["image_data_url"] = None
+    response_item["교정된_내용"] = response_item.get("내용", "") or ""
+    return response_item
+
+
+@app.post("/diary-ocr-stream")
+async def diary_ocr_stream(file: UploadFile = File(...)):
+    """그림일기 OCR 처리 (진행률 스트리밍). SSE로 progress/done 이벤트 전송."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="파일을 업로드해 주세요.")
+
+    ext = Path(file.filename).suffix or ".jpg"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_name = f"diary_{timestamp}"
+    input_path = OCR_UPLOAD_DIR / f"{base_name}{ext}"
+    _save_upload_file(file, input_path)
+
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_event_loop()
+
+    def progress_cb(percent: int, stage: str) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, {"type": "progress", "progress": percent, "stage": stage})
+
+    def run_pipeline() -> None:
+        try:
+            import diary_ocr_only
+            raw_result = diary_ocr_only.run(str(input_path.resolve()), progress_callback=progress_cb)
+            response_item = _build_diary_ocr_response_item(raw_result)
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "done", "result": [response_item]})
+        except Exception as e:
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "detail": str(e)})
+
+    async def event_stream():
+        task = asyncio.get_event_loop().run_in_executor(None, run_pipeline)
+        try:
+            while True:
+                item = await asyncio.wait_for(queue.get(), timeout=300.0)
+                if item["type"] == "progress":
+                    yield f"data: {json.dumps({'progress': item['progress'], 'stage': item['stage']}, ensure_ascii=False)}\n\n"
+                elif item["type"] == "done":
+                    yield f"data: {json.dumps({'done': True, 'result': item['result']}, ensure_ascii=False)}\n\n"
+                    break
+                elif item["type"] == "error":
+                    yield f"data: {json.dumps({'error': True, 'detail': item['detail']}, ensure_ascii=False)}\n\n"
+                    break
+        finally:
+            await task
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ import re
 import sys
 import json
 import warnings
+from typing import Callable
 
 # ocr 폴더를 path에 넣어서 diary_ocr_pipeline 임포트 (프로젝트 루트 .env는 파이프라인에서 로드)
 _this_dir = os.path.dirname(os.path.abspath(__file__))
@@ -17,39 +18,55 @@ if _this_dir not in sys.path:
 import diary_ocr_pipeline as pipeline
 
 
-def run(file_path: str, max_new_tokens: int = 2800, diary_mode: bool = False):
+def run(
+    file_path: str,
+    max_new_tokens: int = 2800,
+    diary_mode: bool = False,
+    progress_callback: Callable[[int, str], None] | None = None,
+):
     """
     이미지 경로 하나 받아서: 전처리(이미지 저장) → OCR → Gemini 후처리 → JSON 저장.
     반환: {"원본", "날짜", "제목", "내용", "그림_저장경로"}
+    progress_callback(percent, stage) 가 주어지면 각 단계에서 호출됨 (0~100, 단계명).
     """
+    def report(p: int, s: str) -> None:
+        if progress_callback:
+            progress_callback(p, s)
+
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"이미지를 찾을 수 없습니다: {file_path}")
 
+    report(5, "이미지 준비 중")
     warnings.filterwarnings("ignore", message=".*[Gg]lyph.*missing from font", category=UserWarning)
 
     if pipeline.model is None or pipeline.processor is None:
         pipeline.load_model()
 
+    report(10, "이미지 전처리 중")
     # 1) 전처리 (문서 보정 + 그림 영역 추출 → ocr/img 에 저장)
     result = pipeline.preprocess_diary_image(
         file_path,
         show_result=False,
         return_detection_vis=False,
     )
+    report(25, "이미지 전처리 완료")
 
     img_path = result[5] if len(result) == 6 else (result[3] if len(result) == 4 else None)
     max_long_side = 512
     # diary_mode=False: 프롬프트 "<ocr>"만 사용 → 조기 종료 적음. True면 긴 안내문으로 일부 환경에서 짧게 끊김.
 
     # 2) OCR
+    report(30, "손글씨 인식 중")
     if len(result) == 6:
         left_pil, right_pil, _, _, _, _ = result
         raw_left, text_boxes_left, full_text_left, pil_left_sent = pipeline.run_varco_ocr(
             left_pil, max_long_side=max_long_side, diary_mode=diary_mode, max_new_tokens=max_new_tokens
         )
+        report(55, "손글씨 인식 중")
         raw_right, text_boxes_right, full_text_right, pil_right_sent = pipeline.run_varco_ocr(
             right_pil, max_long_side=max_long_side, diary_mode=diary_mode, max_new_tokens=max_new_tokens
         )
+        report(75, "손글씨 인식 완료")
         full_text = full_text_left + full_text_right
         raw_output = (raw_left or "") + "\n" + (raw_right or "")
         text_boxes = list(text_boxes_left)
@@ -70,12 +87,15 @@ def run(file_path: str, max_new_tokens: int = 2800, diary_mode: bool = False):
         raw_output, text_boxes, full_text, _ = pipeline.run_varco_ocr(
             pil_image, max_long_side=max_long_side, diary_mode=diary_mode, max_new_tokens=max_new_tokens
         )
+        report(75, "손글씨 인식 완료")
     else:
         pil_image = result[0]
         raw_output, text_boxes, full_text, _ = pipeline.run_varco_ocr(
             pil_image, max_long_side=max_long_side, diary_mode=diary_mode, max_new_tokens=max_new_tokens
         )
+        report(75, "손글씨 인식 완료")
 
+    report(80, "텍스트 교정 중")
     min_bbox_area = 0.0003
     text_boxes = [
         item for item in text_boxes
@@ -87,6 +107,7 @@ def run(file_path: str, max_new_tokens: int = 2800, diary_mode: bool = False):
 
     # 3) Gemini 후처리 (날짜·제목·내용 추출)
     diary_result = pipeline.process_diary_text(display_text)
+    report(95, "텍스트 교정 완료")
     if img_path:
         diary_result["그림_저장경로"] = img_path
 
@@ -117,6 +138,7 @@ def run(file_path: str, max_new_tokens: int = 2800, diary_mode: bool = False):
     if isinstance(out.get("내용"), type(None)):
         out["내용"] = ""
 
+    report(100, "완료")
     return out
 
 

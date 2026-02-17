@@ -1,5 +1,8 @@
 # AiMind-OCR Docker 전용 requirements
-# OCR 관련 의존성만 포함
+# OCR 관련 의존성만 포함 (GPU/CUDA 버전)
+
+# === PyTorch CUDA (GPU 서버용) ===
+--extra-index-url https://download.pytorch.org/whl/cu121
 
 # === FastAPI 및 기본 웹 프레임워크 ===
 fastapi==0.123.9
