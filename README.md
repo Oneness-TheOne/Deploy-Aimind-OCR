@@ -129,8 +129,3 @@ OCR 파이프라인 내부에서 사용하는 모델 경로·키 등은 `ocr/dia
 - 백엔드(Deploy-Aimind-Backend)는 `OCR_BASE_URL`로 이 서비스를 호출합니다 (`/diary-ocr`, `/diary-ocr-stream`).
 - CORS는 `main.py`에서 localhost/127.0.0.1 기준으로 설정되어 있으므로, 배포 시 허용 오리진을 필요에 따라 수정하세요.
 
----
-
-## 라이선스 및 기여
-
-라이선스는 본 저장소의 `LICENSE` 파일을 참고해 주세요. 버그 제보·기능 제안·Pull Request는 이 저장소의 이슈/PR로 남겨 주시면 됩니다.
